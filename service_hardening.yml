@@ -1,0 +1,85 @@
+---
+- name: Service Hardening
+  hosts: all #change with the group in your inventory that you want to config (change to "all" to config all machine in inventory)
+  become: yes
+  vars:
+    packages:
+      - rsync
+      - telnet
+      - ftp
+
+    cron_paths:
+      - /etc/cron.hourly
+      - /etc/cron.daily
+      - /etc/cron.weekly
+      - /etc/cron.monthly
+      - /etc/cron.d
+
+  handlers:
+    - name: restart systemd
+      ansible.builtin.systemd:
+        name: systemd-timesyncd
+        state: restarted
+      listen: "restart_timesyncd"
+
+  tasks:
+    - name: stop rsync
+      ansible.builtin.systemd:
+        name: rsync.service
+        state: stopped
+        masked: yes
+      ignore_errors: yes
+
+    - name: remove packages
+      ansible.builtin.apt:
+        name: "{{ packages }}"
+        state: absent
+        purge: yes
+
+    - name: timeserver
+      ansible.builtin.lineinfile:
+        path: /etc/systemd/timesyncd.conf
+        regexp: '^#?NTP'
+        line: 'NTP=time.nist.gov'
+      notify: "restart_timesyncd"
+
+    - name: crontab
+      ansible.builtin.file:
+        path: /etc/crontab
+        owner: root
+        group: root
+        mode: '0600'
+
+    - name: cron file permission
+      ansible.builtin.file:
+        path: "{{ item }}"
+        owner: root
+        group: root
+        mode: '0700'
+      loop: "{{ cron_paths }}"
+
+    - name: cron deny
+      ansible.builtin.file:
+        path: /etc/cron.deny
+        state: absent
+
+    - name: cron.allow
+      ansible.builtin.file:
+        path: /etc/cron.allow
+        state: touch
+        owner: root
+        group: root
+        mode: '0640'
+
+    - name: at.deny removed
+      ansible.builtin.file:
+        path: /etc/at.deny
+        state: absent
+
+    - name: at.allow konfigurasi
+      ansible.builtin.file:
+        path: /etc/at.allow
+        state: touch
+        owner: root
+        group: root
+        mode: '0640'

@@ -1,0 +1,159 @@
+# 01_ssh_hardening.yml
+---
+
+- name: Apply CIS SSH Hardening
+  hosts: prod_servers,my_machine #change with the group in your inventory that you want to config (change to "all" to config all machine in inventory)
+  become: true
+  gather_facts: yes
+
+  tasks:
+    - name: Ensure SSH configuration directory exists
+      ansible.builtin.file:
+        path: /etc/ssh
+        state: directory
+        mode: '0775'
+
+    - name: Ensure SSH daemon config exists (sshd_config)
+      ansible.builtin.file:
+        path: /etc/ssh/sshd_config
+        state: touch
+        mode: '0600'
+
+    - name: Disable PermitRootLogin
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^PermitRootLogin'
+        line: 'PermitRootLogin no'
+        state: present
+      notify: Restart sshd
+
+    - name: Disable PasswordAuthentication
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^PasswordAuthentication'
+        line: 'PasswordAuthentication no'
+        state: present
+      notify: Restart sshd
+
+    - name: Disable X11Forwarding
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^X11Forwarding'
+        line: 'X11Forwarding no'
+        state: present
+      notify: Restart sshd
+
+    - name: Disable PrintMotd
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^PrintMotd'
+        line: 'PrintMotd no'
+        state: present
+      notify: Restart sshd
+
+    - name: Disable PermitEmptyPasswords
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^PermitEmptyPasswords'
+        line: 'PermitEmptyPasswords no'
+        state: present
+      notify: Restart sshd
+
+    - name: Disable HostbasedAuthentication
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^HostbasedAuthentication'
+        line: 'HostbasedAuthentication no'
+        state: present
+      notify: Restart sshd
+
+    - name: Ensure IgnoreRhosts is set to yes
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^IgnoreRhosts'
+        line: 'IgnoreRhosts yes'
+        state: present
+      notify: Restart sshd
+
+    - name: Ensure SSH Protocol is set to 2
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?Protocol'
+        line: 'Protocol 2'
+        state: present
+      notify: Restart sshd
+
+    - name: Limit SSH LoginGraceTime to 60 seconds
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?LoginGraceTime'
+        line: 'LoginGraceTime 60'
+        state: present
+      notify: Restart sshd
+
+    - name: Limit SSH MaxAuthTries to 4
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?MaxAuthTries'
+        line: 'MaxAuthTries 4'
+        state: present
+      notify: Restart sshd
+
+    - name: Ensure SSH warning banner file exist
+      ansible.builtin.copy:
+        content: |
+          ******************************************************************************
+          * Unauthorized acces to this system is fobidden and will be prosecuted by law. *
+          * By continuing, you agree to all terms and conditions of system use.        *
+          ******************************************************************************
+        dest: /etc/issue.net
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Ensure SSH Banner is set
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?Banner'
+        line: 'Banner /etc.issue.net'
+        state: present
+      notify: Restart sshd
+
+    - name: Set ClientAliveInterval for SSH (5 minutes)
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?ClientAliveInterval'
+        line: 'ClientAliveInterval 300'
+        state: present
+      notify: Restart sshd
+
+    - name: Set ClientAliveCountMax for SSH (disconnect after first interval if idle)
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?ClientAliveCountMax'
+        line: 'ClientAliveCountMax 0'
+        state: present
+      notify: Restart sshd
+
+    - name: Ensure strong Cipher are configured for SSH
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?Ciphers'
+        line: 'ciphers aes256-gcm@openssh.com,chacha20-poly1305@openssh.com,aes256-ctr,aes192-ctr'
+        state: present
+      notify: Restart sshd
+
+    - name: Ensure strong MACs are configured for SSH
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?MACs'
+        line: 'MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com,umac-128-etm@openssh.com,hmac-sha2-512,hmac-sha2-256,umac-128@openssh.com'
+        state: present
+      notify: Restart sshd
+
+  handlers:
+    - name: Restart sshd
+      ansible.builtin.service:
+        name: ssh
+        state: restarted
+        enabled: yes

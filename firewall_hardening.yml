@@ -1,0 +1,126 @@
+# firewall_hardening.yml
+---
+- name: Apply Cis Firewall Hardening (UFW)
+  hosts: all #change with the group in your inventory that you want to config (change to "all" to config all machine in inventory)
+  become: True
+  vars:
+    ufw_allowed_ports:
+      - "22/tcp"
+      - "80/tcp"
+      - "443/tcp"
+
+  tasks:
+    - name: Ensure UFW is installed
+      ansible.builtin.apt:
+        name: ufw
+        state: present
+        update_cache: yes
+
+    - name: reload
+      ansible.builtin.command: ufw disable
+
+    - name: reload ufw
+      ansible.builtin.command:
+        cmd: ufw --force enable
+      register: ufw_enabled_result
+      changed_when: "'Firewall is active and enabled on system startup' in ufw_enabled_result.stdout"
+
+    - name: Set UFW default deny incoming policy
+      community.general.ufw:
+        direction: incoming
+        policy: deny
+        state: enabled
+
+    - name: Set UFW default allow outgoing policy
+      community.general.ufw:
+        direction: outgoing
+        policy: allow
+        state: enabled
+
+    - name: port
+      community.general.ufw:
+        rule: allow
+        port: "{{ item.port }}"
+        proto: "{{ item.proto | default('any') }}"
+        from_ip: "{{ item.from_ip | default('any') }}"
+        comment: "allow {{ item.port }}/{{ item.proto | default('any') }} for {{ item.comment }}"
+      loop:
+        - { port: '22', proto: 'tcp', from_ip: '100.65.120.100', comment: 'SSH vm 1' } #change the ip according to your server
+        - { port: '22', proto: 'tcp', from_ip: '100.103.24.100', comment: 'SSH vm 2' } #change the ip according to your server
+        - { port: '22', proto: 'tcp', from_ip: '100.88.82.55', comment: 'SSH vm 3'  } #change the ip according to your server
+        - { port: '80', proto: 'tcp', comment: 'HTTP' }
+        - { port: '443', proto: 'tcp', comment: 'HTTPS' }
+        - { port: '1156', comment: ' '  }
+        - { port: '48323', comment: ' ' }
+        - { port: '4444', comment: ' ' } # if you not using the port that listed in here just delete it or givr comment (#)
+
+    - name: default policies
+      community.general.ufw:
+        policy: "{{ item.policy }}"
+        direction: "{{item.direction}}"
+      loop:
+        - { direction: 'incoming', policy: 'deny' }
+        - { direction: 'outgoing', policy: 'allow' }
+
+    - name: enableipv6 #just comment this if you not using ipv6
+      ansible.builtin.lineinfile:
+        path: /etc/default/ufw
+        regexp: '^IPV6='
+        line: 'IPV6=yes'
+      notify: "restart ufw handler"
+
+    - name: traffic loopback
+      community.general.ufw:
+        rule: "{{ item.rule }}"
+        direction: "{{ item.direction }}"
+        interface: "{{ item.interface | default(omit) }}"
+        from_ip: "{{ item.from_ip | default(omit) }}"
+        comment: "{{ item.comment }}"
+      loop:
+        - { rule: 'allow', direction: 'in', interface: 'lo', comment: 'allow loopback traffic in' }
+        - { rule: 'allow', direction: 'out', interface: 'lo', comment: 'allow loopback traffic out' }
+        - { rule: 'deny', direction: 'in', from_ip: '127.0.0.0/8', comment: 'Deny spoofed loopback traffic (ipv4)' } #change the ip range according to you server
+        - { rule: 'deny', direction: 'in', from_ip: '::1', comment: 'deny spoofed loopback traffic (ipv6)' }
+
+    - name: service port
+      community.general.ufw:
+        rule: allow
+        port: "{{ item.split('/')[0] }}"
+        proto: "{{ item.split('/')[1] }}"
+        comment: "allow required service {{ item }}"
+      loop: "{{ufw_allowed_ports }}"
+
+    - name: ufw default deny
+      community.general.ufw:
+        policy: 'deny'
+        direction: "{{ item }}"
+      loop:
+        - 'incoming'
+        - 'outgoing'
+        - 'routed'
+
+    - name: Restart UFW to apply IPv6 setting
+      ansible.builtin.systemd:
+        name: ufw
+        state: restarted
+        enabled: yes
+
+    - name: Ensure UFW is enabled and started
+      community.general.ufw:
+        state: enabled
+
+    - name: Verify UFW status and rules
+      ansible.builtin.command: ufw status verbose
+      register: ufw_status_output
+      changed_when: false
+
+    - name: Display UFW status
+      ansible.builtin.debug:
+        var: ufw_status_output.stdout_lines
+
+  handlers:
+    - name: restart ufw handler
+      ansible.builtin.systemd:
+        name: ufw
+        state: restarted
+      listen: "restart ufw handler"

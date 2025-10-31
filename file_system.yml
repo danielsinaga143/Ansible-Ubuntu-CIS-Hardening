@@ -1,0 +1,181 @@
+# file_system.yml
+---
+
+- name: Filesystem hardening
+  hosts: my_machine,prod_servers #change with the group in your inventory that you want to config (change to "all" to config all machine in inventory)
+  become: true
+  vars:
+    modules:
+      - cramfs
+      - freevxfs
+      - hfs
+      - hfsplus
+      - jffs2
+      - usb-storage
+
+  tasks:
+    - name: disable modules
+      ansible.builtin.lineinfile:
+        path: /etc/modprobe.d/99-cis-remediation.conf
+        line: "install {{ item }} /bin/false"
+        create: yes
+        owner: root
+        group: root
+        mode: '0644'
+      loop: "{{ modules }}"
+      notify: "initramfs_updated"
+
+    - name: apt
+      ansible.builtin.replace:
+        path: /etc/apt/sources.list
+        regexp: 'http://id.archive.ubuntu.com/ubuntu'
+        replace: 'http://archive.ubuntu.com/ubuntu'
+      ignore_errors: yes
+
+    - name: repository file
+      ansible.builtin.find:
+        paths: /etc/apt/sources.list.d/
+        patterns:
+          - '*.list'
+          - '*.sources'
+      register: repo_files_to_fix
+
+    - name: broken apt
+      ansible.builtin.replace:
+        path: "{{ item.path }}"
+        regexp: 'http://id.archive.ubuntu.com/ubuntu'
+        replace: 'https://archive.ubuntu.com/ubuntu'
+      loop: "{{ repo_files_to_fix.files }}"
+
+    - name: unload running modules
+      ansible.builtin.command: "modprobe -r {{ item }}"
+      loop: "{{ modules }}"
+      failed_when: false
+      changed_when: false
+
+    - name: noexec
+      ansible.posix.mount:
+        path: /dev/shm
+        fstype: tmpfs
+        src: tmpfs
+        opts: "defaults,noexec,nosuid,nodev"
+        state: present
+        dump: '0'
+        passno: '0'
+
+    - name: AppArmor
+      ansible.builtin.apt:
+        name:
+          - apparmor
+          - apparmor-utils
+        state: latest
+        update_cache: yes
+
+    - name: enable apparmor
+      ansible.builtin.lineinfile:
+        path: /etc/default/grub
+        regexp: '^(GRUB_CMDLINE_LINUX=")(.*?)(")$'
+        line: '\1\2 apparmor=1 security=apparmor\3'
+        backrefs: yes
+      notify: "grub_updated"
+
+    - name: bootloader config
+      ansible.builtin.file:
+        path: /boot/grub/grub.cfg
+        owner: root
+        group: root
+        mode: '0600'
+
+    - name: sys directory
+      ansible.builtin.file:
+        path: /etc/sysctl.d
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: kernel parameters
+      ansible.posix.sysctl:
+        name: "{{ item.name }}"
+        value: "{{ item.value }}"
+        sysctl_file: /etc/sysctl.d/99-hardening.conf
+        reload: yes
+      loop:
+          - { name: 'kernel.randomize_va_space', value: '2' }
+          - { name: 'fs.suid_dumpable', value: '0' }
+
+    - name: restrict limit
+      ansible.builtin.lineinfile:
+        path: /etc/security/limits.conf
+        line: '* hard core 0'
+        create: yes
+
+    - name: fs.suid kernel parameter
+      ansible.posix.sysctl:
+        name: fs.suid_dumpable
+        value: '0'
+        sysctl_file: /etc/sysctl.d/99-cis-coredump.conf
+        reload: yes
+
+    - name: check config
+      ansible.builtin.stat:
+        path: /etc/systemd/coredump.conf
+      register: coredump_conf_stat
+
+    - name: disable storage
+      ansible.builtin.lineinfile:
+        path: /etc/systemd/coredump.conf
+        regexp: '^#?Storage='
+        line: 'Storage=none'
+      when: coredump_conf_stat.stat.exists
+      notify: "reload_systemd"
+
+    - name: max process
+      ansible.builtin.lineinfile:
+        path: /etc/systemd/coredump.conf
+        regexp: '^#?ProcessSizeMax='
+        line: 'ProcessSizeMax=0'
+      when: coredump_conf_stat.stat.exists
+      notify: "reload_systemd"
+
+    - name: disable apport
+      ansible.builtin.lineinfile:
+        path: /etc/default/apport
+        regexp: '^enabled='
+        line: 'enabled=0'
+        create: yes
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: stop apport
+      ansible.builtin.systemd:
+        name: apport.service
+        state: stopped
+        masked: yes
+      ignore_errors: yes
+
+    - name: warning banner
+      ansible.builtin.copy:
+        dest: /etc/issue
+        content: |
+          ####################################
+          # System for authorized users only #
+          ####################################
+        owner: root
+        group: root
+        mode: '0644'
+
+  handlers:
+    - name: update_initramfs
+      ansible.builtin.command: update-initramfs -u
+      listen: "initramfs_updated"
+
+    - name: update grub
+      ansible.builtin.command: update-grub
+      listen: "grub_updated"
+
+    - name: reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: yes
+      listen: "reload_systemd"

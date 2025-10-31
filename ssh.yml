@@ -1,0 +1,240 @@
+---
+- name: cis ssh hardening
+  hosts: all #change with the group in your inventory that you want to config (change to "all" to config all machine in inventory)
+  become: yes
+  vars:
+    sshd_allow_users: "root daniel ariq daniel1"
+    sshd_strong_macs: "hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com,hmac-sha2-512,hmac-sha2-256"
+    shell_timeout_seconds: 900
+
+  handlers:
+    - name: restart sshd
+      ansible.builtin.systemd:
+        name: sshd
+        state: restarted
+      listen: "restart_sshd"
+
+  tasks:
+    - name: sshd banner config
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?Banner'
+        line: 'Banner /etc/issue.net'
+        validate: 'sshd -t -f %s'
+      notify: "restart_sshd"
+
+    - name: issue banner
+      ansible.builtin.copy:
+        dest: /etc/issue.net
+        content: |
+          ###########################################
+          # This system is for authorized user only #
+          ###########################################
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: sshd access
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?AllowUsers'
+        line: "AllowUsers {{ sshd_allow_users }}"
+        validate: 'sshd -t -f %s'
+      when: sshd_allow_users is defined and sshd_allow_users != ""
+      notify: "restart_sshd"
+
+    - name: sshd macs
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?MACs'
+        line: "MACs {{ sshd_strong_macs}}"
+        validate: 'sshd -t -f %s'
+      notify: "restart_sshd"
+
+    - name: client interval
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?ClientAliveInterval'
+        line: 'ClientAliveInterval 15'
+        validate: 'sshd -t -f %s'
+      notify: "restart_sshd"
+
+    - name: client count
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?ClientAliveCountMax'
+        line: 'ClientAliveCountMax 3'
+        validate: 'sshd -t -f %s'
+      notify: "restart_sshd"
+
+    - name: sshd startups
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?MaxStartups'
+        line: 'MaxStartups 10.30.60'
+        validate: 'sshd -t -f %s'
+      notify: "restart_sshd"
+
+    - name: sudo cmmd pty
+      ansible.builtin.lineinfile:
+        path: /etc/sudoers
+        line: 'Defaults use_pty'
+        validate: 'visudo -cf %s'
+
+    - name: sudo log file
+      ansible.builtin.lineinfile:
+        path: /etc/sudoers
+        line: 'Defaults logfile="/var/log/sudo.log"'
+        validate: 'visudo -cf %s'
+
+    - name: su command restric
+      ansible.builtin.lineinfile:
+        path: /etc/pam.d/su
+        regexp: '^#?auth\s+required\s+pam_wheel.so'
+        line: 'auth required pam_wheel.so use_uid group=sugroup'
+
+    - name: sugroup
+      ansible.builtin.group:
+        name: sugroup
+        state: present
+
+    - name: umask login.def
+      ansible.builtin.lineinfile:
+        path: /etc/login.defs
+        regexp: '^#?UMASK'
+        line: 'UMASK 027'
+
+    - name: libpam
+      ansible.builtin.apt:
+        name: ['libpam-pwquality', 'libpam-faillock']
+        state: latest
+      ignore_errors: yes
+
+    - name: faillock
+      ansible.builtin.lineinfile:
+        path: /etc/security/faillock.conf
+        regexp: "^#?{{ item.key }}"
+        line: "{{ item.key }} = {{ item.value }}"
+        create: yes
+        owner: root
+        group: root
+        mode: '0644'
+      loop:
+        - { key: 'deny', value: '5' }
+        - { key: 'unlock_time', value: '10' }
+
+    - name: pwquality
+      ansible.builtin.lineinfile:
+        path: /etc/security/pwquality.conf
+        regexp: "^#?{{ item.key }}"
+        line: "{{ item.key }} = {{ item.value }}"
+        create: yes
+        owner: root
+        group: root
+        mode: '0644'
+      loop:
+        - { key: 'difok', value: '2' }
+        - { key: 'minlen', value: '3' }
+        - { key: 'maxrepeat', value: '3' }
+        - { key: 'maxsequence', value: '3' }
+        - { key: 'enforce_for_root', value: ' ' }
+
+    - name: pass expired
+      ansible.builtin.lineinfile:
+        path: /etc/login.defs
+        regexp: '^#?PASS_MAX_DAYS'
+        line: 'PASS_MAX_DAYS 365'
+
+    - name: list user
+      ansible.builtin.shell:
+        cmd: "awk -F: '($3>=1000)&&($1!=\"nobody\"){print $1}' /etc/passwd"
+      register: regular_users
+      changed_when: false
+
+    - name: apply max days
+      ansible.builtin.command:
+        cmd: "chage --maxdays 365 {{ item }}"
+      loop: "{{ regular_users.stdout_lines }}"
+      when: regular_users.stdout_lines | length > 0
+
+    - name: inactive password lock
+      ansible.builtin.command: useradd -D -f 45
+
+    - name: pam profile
+      ansible.builtin.copy:
+        dest: /usr/share/pam-configs/pwhistory
+        content: |
+          Name: pwhistory password history checking
+          Defalt: yes
+          Priority: 1024
+          Password-Type: primary
+          Password:
+                  requisite                      pam_pwhistory.so remember=24 enforce_for_root use_authtok
+      when: ansible_facts['os_family'] == "Debian"
+
+    - name: PAM Profile faillock
+      ansible.builtin.copy:
+        dest: /usr/share/pam-configs/faillock
+        content: |
+          Name: Enable pam_faillock to deny access
+          Default: yes
+          priority: 0
+          Auth-Type: Primary
+          Auth:
+                  [default=die] pam_faillock.so authfail
+      when: ansible_facts['os_family'] == "Debian"
+
+    - name: PAM profile faillock notify
+      ansible.builtin.copy:
+        dest: /usr/share/pam-configs/faillock_notify
+        content: |
+          Name: Notify of failed login attemps and reset count upon success
+          Default: yes
+          Priority: 1024
+          Auth-Type: Primary
+          Auth:
+                  requisite pam_faillock.so preauth
+          Account-Type: Primary
+          Account:
+                  required pam_faillock.so
+      when: ansible_facts['os_family'] == "Debian"
+
+    - name: pam unix
+      ansible.builtin.replace:
+        path: /usr/share/pam-configs/unix
+        regexp: '^(password\s+\[success=end default=ignore]\s+pam_unix.so\s+)(.*)$'
+        replace: '\1obscure use_authtok try_first_pass yescrypt'
+      ignore_errors: yes
+
+    - name: umask config
+      ansible.builtin.copy:
+        dest: /etc/profile.d/99-hardening-umask.sh
+        content: |
+          #!/bin/sh
+          # set a secure default umask
+          umask 027
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: inactive session timeout
+      ansible.builtin.copy:
+        dest: /etc/profile.d/99-hardening-tmout.sh
+        content: |
+          #!/bin/sh
+          # set auto logout for inactive sessions
+          typeset -xr TMOUT={{ shell_timeout_seconds }}
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: enable PAM profile
+      ansible.builtin.command:
+        cmd: pam-auth-update --enable {{ item }} --force
+      loop:
+        - pwquality
+        - pwhistory
+        - faillock
+        - faillock_notify
+        - unix
+      changed_when: true

@@ -1,0 +1,35 @@
+---
+- name: apt list
+  hosts: ariq 
+  become: yes
+  gather_facts: yes
+
+  tasks:
+    - name: list
+      ansible.builtin.copy:
+        dest: /etc/apt/sources.list
+        owner: root
+        group: root
+        mode: '0644'
+        backup: yes
+        content: |
+          deb http://archive.ubuntu.com/ubuntu/ {{ ansible_distribution_release }} main restricted universe multiverse
+          deb http://archive.ubuntu.com/ubuntu/ {{ ansible_distribution_release }}-updates main restricted universe multiverse
+          deb http://archive.ubuntu.com/ubuntu/ {{ ansible_distribution_release }}-backports main restricted universe multiverse
+          deb http://security.ubuntu.com/ubuntu {{ ansible_distribution_release }}-security main restricted universe multiverse
+
+    - name: old file
+      ansible.builtin.find:
+        paths: /etc/apt/sources.list.d/
+        patterns: '*.list,*.sources'
+      register: old_repo_files
+
+    - name: remove old file
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ old_repo_files.files }}"
+
+    - name: update
+      ansible.builtin.apt:
+        update_cache: yes
